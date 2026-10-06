@@ -1,0 +1,70 @@
+from pathlib import Path
+import json
+import openpyxl
+import numpy as np
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
+from matplotlib.patches import Patch
+from matplotlib.lines import Line2D
+from matplotlib.ticker import PercentFormatter
+
+ROOT = Path(r'C:\Users\adm956\Documents\Codex\2026-09-08\cre')
+OUT = ROOT / 'outputs'
+OUT.mkdir(exist_ok=True)
+source = Path(r'C:\Users\adm956\OneDrive - University of Wollongong\EthacrynicAcid_percentTDP-43_nucleusnew.xlsx')
+wb = openpyxl.load_workbook(source, data_only=True)
+groups = [('WT', 2, '18 hours', 'WT 37.5 rep1'), ('WT', 2, '42 hours', 'WT 37.5 rep2 day'), ('3R', 1, '18 hours', '3R 37.5 rep1'), ('3R', 1, '42 hours', '3R 37.5 rep2 day'), ('Untreated', 0, 'Untreated', 'Untreated')]
+colors = {'18 hours': '#5B9BD5', '42 hours': '#E56B7F', 'Untreated': '#B8BEC6'}
+dots = {t: '#424242' for t in colors}
+plt.rcParams.update({'font.family': 'Arial', 'font.size': 9, 'axes.labelsize': 11, 'xtick.labelsize': 11, 'ytick.labelsize': 11, 'svg.fonttype': 'none'})
+fig, ax = plt.subplots(figsize=(6.4, 6.1), constrained_layout=True)
+rng = np.random.default_rng(4302)
+summary = []
+for construct, center, time, sheet in groups:
+    s = wb[sheet]
+    vals = np.array([s.cell(r, 9).value for r in range(3, s.max_row + 1) if isinstance(s.cell(r, 9).value, (int, float))])
+    assert len(vals) == 50 and np.all((vals >= 0) & (vals <= 1))
+    for r in range(3, s.max_row + 1):
+        if isinstance(s.cell(r, 9).value, (int, float)):
+            assert abs(s.cell(r, 9).value - s.cell(r, 7).value / s.cell(r, 8).value) < 1e-10
+    body = ax.violinplot([vals], positions=[center], widths=.62, orientation='horizontal', showextrema=False, bw_method=.22)['bodies'][0]
+    body.set_facecolor(colors[time]); body.set_edgecolor('#202020'); body.set_linewidth(.9); body.set_alpha(.88)
+    vertices = body.get_paths()[0].vertices
+    if time == '18 hours':
+        vertices[:, 1] = np.maximum(vertices[:, 1], center)
+        jitter = rng.uniform(.035, .225, len(vals)); span = [center, center + .28]
+    elif time == '42 hours':
+        vertices[:, 1] = np.minimum(vertices[:, 1], center)
+        jitter = rng.uniform(-.225, -.035, len(vals)); span = [center - .28, center]
+    else:
+        jitter = rng.uniform(-.225, .225, len(vals)); span = [center - .28, center + .28]
+    median = np.median(vals)
+    # Intersect the median x-coordinate with the actual violin polygon.
+    intersections = []
+    for a, b in zip(vertices, np.roll(vertices, -1, axis=0)):
+        if a[0] != b[0] and min(a[0], b[0]) <= median <= max(a[0], b[0]):
+            fraction = (median - a[0]) / (b[0] - a[0])
+            intersections.append(a[1] + fraction * (b[1] - a[1]))
+    assert len(intersections) >= 2
+    span = [min(intersections), max(intersections)]
+    ax.scatter(vals, center + jitter, s=10, c=dots[time], alpha=.68, edgecolors='white', linewidths=.2, zorder=3)
+    ax.plot([median, median], span, color='black', linewidth=1.1, solid_capstyle='butt', zorder=4)
+    summary.append({'sheet': sheet, 'construct': construct, 'timepoint': time, 'n_cells': len(vals), 'median_fraction': float(median)})
+ax.set_xlabel('TDP-43 in the nucleus (%)', labelpad=8)
+ax.set_yticks([0, 1, 2], ['Untreated', '3R', 'WT'])
+ax.xaxis.set_major_formatter(PercentFormatter(xmax=1, decimals=0))
+ax.set_xlim(0, 1.04); ax.set_ylim(-.6, 2.6)
+ax.grid(axis='x', color='#D7D7D7', linewidth=.6, alpha=.75); ax.set_axisbelow(True)
+for side in ['top', 'right']: ax.spines[side].set_visible(False)
+for side in ['left', 'bottom']: ax.spines[side].set_color('#6B7785')
+for y in [.5, 1.5]: ax.axhline(y, color='#9A9A9A', linewidth=.55, alpha=.65)
+handles = [Patch(facecolor=colors[t], edgecolor='#3A4856', label=t) for t in colors]
+handles += [Line2D([0], [0], marker='o', color='none', markerfacecolor='#424242', markeredgecolor='white', markersize=6, label='Individual cell'), Line2D([0], [0], color='black', linewidth=1.1, label='Median')]
+ax.legend(handles=handles, loc='lower center', bbox_to_anchor=(.5, 1.012), ncol=3, frameon=False, fontsize=10, markerscale=1.2, handletextpad=.5, columnspacing=1.1)
+for suffix in ['png', 'svg']:
+    fig.savefig(OUT / f'EthacrynicAcid_TDP43_split_violin.{suffix}', dpi=600, bbox_inches='tight', facecolor='white')
+fig.savefig(ROOT / 'work/preview.png', dpi=150, bbox_inches='tight', facecolor='white')
+(ROOT / 'work/verification.json').write_text(json.dumps(summary, indent=2))
+print(json.dumps(summary, indent=2))
+
