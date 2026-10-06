@@ -1,0 +1,643 @@
+# Annotated reporter-intensity violin plot script
+#
+# Purpose:
+#   Recreate the final reporter-intensity violin plot from the cleaned cell-level
+#   dataset, including replicate-coloured data points, replicate median markers,
+#   pooled overall median lines, and Prism-derived significance annotations.
+#
+# Generated from:
+#   plot_reporter_intensity_violin_replicates.py
+#
+# Notes:
+#   These comments explain the purpose of each major section. They do not change
+#   the plotted data, styling, statistics, or output names.
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from matplotlib.lines import Line2D
+from matplotlib.patches import Patch
+
+
+# -----------------------------------------------------------------------------
+# File paths and output names
+# These settings tell the script where to find the cleaned reporter-intensity
+# dataset and where to save the final figure, summary table, and significance map.
+# -----------------------------------------------------------------------------
+BASE_DIR = Path(__file__).resolve().parent
+INPUT_CSV = BASE_DIR / "clean_cell_level_reporter_intensity_dataset.csv"
+CODEX_DIR = BASE_DIR / "Codex"
+OUTPUT_STEM = "violin_plot_with_overall_medians_and_prism_significance"
+SIGNIFICANCE_MAPPING = CODEX_DIR / "significance_annotation_mapping.csv"
+
+# -----------------------------------------------------------------------------
+# Plot order and colour settings
+# These constants control the order of constructs, the two cell groups, replicate
+# colours, violin colours, and labels used in the final manuscript-style figure.
+# -----------------------------------------------------------------------------
+CONSTRUCT_ORDER = ["WT", "NTD", "CTD", "2M", "3M", "FL", "GFP", "UT"]
+CELL_GROUPS = ["Transfected", "Untransfected"]
+REPLICATE_COLORS = {
+    "Replicate 1": "#0072B2",
+    "Replicate 2": "#E69F00",
+    "Replicate 3": "#7A7A7A",
+}
+CONDITION_COLORS = {
+    "Transfected": "#1F981F",
+    "Untransfected": "#BF00BF",
+}
+MEDIAN_COLORS = {
+    "Replicate 1": "#004C7F",
+    "Replicate 2": "#B36B00",
+    "Replicate 3": "#3F3F3F",
+}
+CONSTRUCT_LABELS = {
+    "WT": r"TDP-43$^{WT}$",
+    "NTD": r"TDP-43$^{\Delta NTD}$",
+    "CTD": r"TDP-43$^{\Delta CTD}$",
+    "2M": r"TDP-43$^{E14A,E17A}$",
+    "3M": r"TDP-43$^{E14A,E17A,E21A}$",
+    "FL": r"TDP-43$^{F147L,F149L}$",
+    "GFP": "EGFP",
+    "UT": "Untransfected",
+}
+
+# -----------------------------------------------------------------------------
+# Prism significance results
+# These values are manually entered from the GraphPad Prism results and are used
+# only for figure annotations. The script does not recalculate these p-values.
+# -----------------------------------------------------------------------------
+PRISM_SIGNIFICANCE = [
+    {
+        "family": "GFP reference",
+        "comparison": "GFP trans vs. WT trans",
+        "group_1": "GFP",
+        "group_2": "WT",
+        "mean_difference": 0.02181,
+        "significance": "**",
+        "adjusted_p_value": 0.0012,
+    },
+    {
+        "family": "GFP reference",
+        "comparison": "GFP trans vs. NTD trans",
+        "group_1": "GFP",
+        "group_2": "NTD",
+        "mean_difference": 0.02288,
+        "significance": "***",
+        "adjusted_p_value": 0.0008,
+    },
+    {
+        "family": "GFP reference",
+        "comparison": "GFP trans vs. CTD trans",
+        "group_1": "GFP",
+        "group_2": "CTD",
+        "mean_difference": 0.02541,
+        "significance": "***",
+        "adjusted_p_value": 0.0003,
+    },
+    {
+        "family": "GFP reference",
+        "comparison": "GFP trans vs. 2M trans",
+        "group_1": "GFP",
+        "group_2": "2M",
+        "mean_difference": 0.02228,
+        "significance": "***",
+        "adjusted_p_value": 0.0010,
+    },
+    {
+        "family": "GFP reference",
+        "comparison": "GFP trans vs. 3M trans",
+        "group_1": "GFP",
+        "group_2": "3M",
+        "mean_difference": 0.01812,
+        "significance": "**",
+        "adjusted_p_value": 0.0055,
+    },
+    {
+        "family": "GFP reference",
+        "comparison": "GFP trans vs. FL trans",
+        "group_1": "GFP",
+        "group_2": "FL",
+        "mean_difference": 0.005644,
+        "significance": "ns",
+        "adjusted_p_value": 0.6462,
+    },
+    {
+        "family": "WT reference",
+        "comparison": "WT trans vs. NTD trans",
+        "group_1": "WT",
+        "group_2": "NTD",
+        "mean_difference": 0.001066,
+        "significance": "ns",
+        "adjusted_p_value": 0.9996,
+    },
+    {
+        "family": "WT reference",
+        "comparison": "WT trans vs. CTD trans",
+        "group_1": "WT",
+        "group_2": "CTD",
+        "mean_difference": 0.003595,
+        "significance": "ns",
+        "adjusted_p_value": 0.9136,
+    },
+    {
+        "family": "WT reference",
+        "comparison": "WT trans vs. 2M trans",
+        "group_1": "WT",
+        "group_2": "2M",
+        "mean_difference": 0.0004667,
+        "significance": "ns",
+        "adjusted_p_value": 0.9999,
+    },
+    {
+        "family": "WT reference",
+        "comparison": "WT trans vs. 3M trans",
+        "group_1": "WT",
+        "group_2": "3M",
+        "mean_difference": -0.00369,
+        "significance": "ns",
+        "adjusted_p_value": 0.9045,
+    },
+    {
+        "family": "WT reference",
+        "comparison": "WT trans vs. FL trans",
+        "group_1": "WT",
+        "group_2": "FL",
+        "mean_difference": -0.01617,
+        "significance": "*",
+        "adjusted_p_value": 0.0127,
+    },
+    {
+        "family": "WT reference",
+        "comparison": "WT trans vs. GFP trans",
+        "group_1": "WT",
+        "group_2": "GFP",
+        "mean_difference": -0.02181,
+        "significance": "**",
+        "adjusted_p_value": 0.0012,
+    },
+]
+
+
+# -----------------------------------------------------------------------------
+# Summary table creation
+# This function calculates n, mean, and median reporter intensity for each
+# construct, cell group, and replicate. The output is saved for fact-checking.
+# -----------------------------------------------------------------------------
+def summarise(clean: pd.DataFrame) -> pd.DataFrame:
+    return (
+        clean.groupby(["Metadata_Construct", "Cell_group", "Replicate"], as_index=False)
+        .agg(
+            n_cells=("reporter_intensity", "count"),
+            mean_reporter_intensity=("reporter_intensity", "mean"),
+            median_reporter_intensity=("reporter_intensity", "median"),
+        )
+        .sort_values(["Metadata_Construct", "Cell_group", "Replicate"])
+    )
+
+
+# -----------------------------------------------------------------------------
+# Significance mapping table
+# This converts the manual Prism results into a CSV-friendly table so the plotted
+# annotations can be checked against the original Prism output.
+# -----------------------------------------------------------------------------
+def prism_mapping_dataframe() -> pd.DataFrame:
+    mapping = pd.DataFrame(PRISM_SIGNIFICANCE)
+    mapping["source"] = "GraphPad Prism screenshot supplied by user"
+    mapping["cell_group"] = "Transfected"
+    mapping["annotation_type"] = "right-side bracket/bar annotation on plot"
+    return mapping[
+        [
+            "source",
+            "annotation_type",
+            "family",
+            "cell_group",
+            "comparison",
+            "group_1",
+            "group_2",
+            "mean_difference",
+            "significance",
+            "adjusted_p_value",
+        ]
+    ]
+
+
+# -----------------------------------------------------------------------------
+# Optional compact significance table
+# This helper is retained from earlier figure versions but is not used in the
+# current final plot, which shows significance as right-side bracket annotations.
+# -----------------------------------------------------------------------------
+def add_significance_table(fig: plt.Figure) -> None:
+    mapping = prism_mapping_dataframe()
+    gfp = mapping[mapping["family"] == "GFP reference"].reset_index(drop=True)
+    wt = mapping[mapping["family"] == "WT reference"].reset_index(drop=True)
+    rows = []
+    for index in range(max(len(gfp), len(wt))):
+        gfp_text = ""
+        gfp_sig = ""
+        wt_text = ""
+        wt_sig = ""
+        if index < len(gfp):
+            gfp_text = gfp.loc[index, "comparison"].replace(" trans", "")
+            gfp_sig = f"{gfp.loc[index, 'significance']} ({gfp.loc[index, 'adjusted_p_value']:.4g})"
+        if index < len(wt):
+            wt_text = wt.loc[index, "comparison"].replace(" trans", "")
+            wt_sig = f"{wt.loc[index, 'significance']} ({wt.loc[index, 'adjusted_p_value']:.4g})"
+        rows.append([gfp_text, gfp_sig, wt_text, wt_sig])
+
+    ax_table = fig.add_axes([0.08, 0.015, 0.88, 0.18])
+    ax_table.axis("off")
+    ax_table.text(
+        0.5,
+        1.06,
+        "Prism significance, transfected groups (adjusted p values)",
+        ha="center",
+        va="bottom",
+        fontsize=7,
+        fontweight="bold",
+        transform=ax_table.transAxes,
+    )
+    table = ax_table.table(
+        cellText=rows,
+        colLabels=["GFP comparisons", "Sig. (p adj.)", "WT comparisons", "Sig. (p adj.)"],
+        colWidths=[0.34, 0.14, 0.34, 0.14],
+        cellLoc="left",
+        loc="center",
+    )
+    table.auto_set_font_size(False)
+    table.set_fontsize(5.5)
+    table.scale(1, 1.0)
+    for (row, _col), cell in table.get_celld().items():
+        cell.set_linewidth(0.25)
+        cell.set_edgecolor("#D0D0D0")
+        if row == 0:
+            cell.set_facecolor("#F4F4F4")
+            cell.set_text_props(weight="bold")
+
+
+# -----------------------------------------------------------------------------
+# Right-side significance annotations
+# This function draws the Sig vs GFP and Sig vs WT bracket columns, using the
+# Prism significance labels exactly as entered above.
+# -----------------------------------------------------------------------------
+def add_prism_brackets(
+    ax: plt.Axes,
+    constructs: list[str],
+    y_base: np.ndarray,
+    group_offsets: dict[str, float],
+    upper: float,
+) -> None:
+    y_lookup = {
+        construct: y_base[index] + group_offsets["Transfected"]
+        for index, construct in enumerate(constructs)
+    }
+    family_x = {
+        "GFP reference": upper * 1.045,
+        "WT reference": upper * 1.315,
+    }
+    tick = upper * 0.012
+    text_gap = upper * 0.017
+    line_color = "#111111"
+    line_width = 1.05
+    label_size = 8.4
+    header_size = 7.9
+
+    for family, x in family_x.items():
+        family_rows = [
+            row
+            for row in PRISM_SIGNIFICANCE
+            if row["family"] == family
+            and row["group_1"] in y_lookup
+            and row["group_2"] in y_lookup
+        ]
+        if not family_rows:
+            continue
+
+        reference = family_rows[0]["group_1"]
+        ref_y = y_lookup[reference]
+        family_rows.sort(key=lambda row: y_lookup[row["group_2"]], reverse=True)
+        comparison_ys = [y_lookup[row["group_2"]] for row in family_rows]
+        y_low = min([ref_y, *comparison_ys])
+        y_high = max([ref_y, *comparison_ys])
+
+        ax.plot(
+            [x, x],
+            [y_low, y_high],
+            color=line_color,
+            linewidth=line_width,
+            clip_on=False,
+            zorder=8,
+        )
+        ax.plot(
+            [x - tick * 1.15, x],
+            [ref_y, ref_y],
+            color=line_color,
+            linewidth=line_width,
+            clip_on=False,
+            zorder=8,
+        )
+        for row in family_rows:
+            comparator_y = y_lookup[row["group_2"]]
+            ax.plot(
+                [x - tick, x],
+                [comparator_y, comparator_y],
+                color=line_color,
+                linewidth=line_width,
+                clip_on=False,
+                zorder=8,
+            )
+            ax.text(
+                x + text_gap,
+                comparator_y,
+                row["significance"],
+                ha="left",
+                va="center",
+                fontsize=label_size,
+                color=line_color,
+                clip_on=False,
+                zorder=9,
+            )
+        # Column headers removed at user request; keep the bracket/significance labels.
+
+
+# -----------------------------------------------------------------------------
+# Main plotting function
+# This creates the horizontal violin plot, overlays individual cell values,
+# adds replicate-median triangles and pooled overall-median lines, formats the
+# axes/legend, adds Prism significance brackets, and saves PNG/SVG/PDF outputs.
+# -----------------------------------------------------------------------------
+def make_plot(clean: pd.DataFrame, summary: pd.DataFrame) -> list[Path]:
+    # Set publication-friendly font and export settings.
+    plt.rcParams.update(
+        {
+            "font.family": "Arial",
+            "font.size": 8,
+            "axes.linewidth": 0.8,
+            "pdf.fonttype": 42,
+            "svg.fonttype": "none",
+        }
+    )
+
+    # Keep only constructs and replicates that are present in the input dataset.
+    constructs = [c for c in CONSTRUCT_ORDER if c in clean["Metadata_Construct"].unique()]
+    replicates = [r for r in REPLICATE_COLORS if r in clean["Replicate"].unique()]
+
+    fig, ax = plt.subplots(figsize=(6.45, 7.4))
+    y_base = np.arange(len(constructs))[::-1]
+    group_offsets = {"Transfected": 0.18, "Untransfected": -0.18}
+    point_offsets = {
+        "Replicate 1": 0.065,
+        "Replicate 2": 0.0,
+        "Replicate 3": -0.065,
+    }
+    rng = np.random.default_rng(42)
+
+    # Draw one violin per construct and cell group using all cell-level values.
+    for group in CELL_GROUPS:
+        datasets = []
+        positions = []
+        for index, construct in enumerate(constructs):
+            if construct == "UT" and group == "Transfected":
+                continue
+            values = clean.loc[
+                (clean["Metadata_Construct"] == construct)
+                & (clean["Cell_group"] == group),
+                "reporter_intensity",
+            ].dropna()
+            if len(values) < 2:
+                continue
+            datasets.append(values.to_numpy(dtype=float))
+            positions.append(y_base[index] + group_offsets[group])
+
+        if not datasets:
+            continue
+
+        violin = ax.violinplot(
+            datasets,
+            positions=positions,
+            vert=False,
+            widths=0.34,
+            showmeans=False,
+            showmedians=False,
+            showextrema=False,
+            bw_method=0.25,
+        )
+        fill = CONDITION_COLORS[group]
+        for body in violin["bodies"]:
+            body.set_facecolor(fill)
+            body.set_edgecolor("#111111")
+            body.set_linewidth(1.25)
+            body.set_alpha(0.38)
+            body.set_zorder(4)
+
+    for group in CELL_GROUPS:
+        for index, construct in enumerate(constructs):
+            if construct == "UT" and group == "Transfected":
+                continue
+            values = clean.loc[
+                (clean["Metadata_Construct"] == construct)
+                & (clean["Cell_group"] == group),
+                "reporter_intensity",
+            ].dropna()
+            if values.empty:
+                continue
+            y = y_base[index] + group_offsets[group]
+            # Calculate the pooled overall median across all cells in this violin.
+            pooled_median = float(values.median())
+            ax.vlines(
+                pooled_median,
+                y - 0.17,
+                y + 0.17,
+                color="#222222",
+                linewidth=1.6,
+                zorder=7,
+            )
+
+    for group in CELL_GROUPS:
+        for replicate in replicates:
+            for index, construct in enumerate(constructs):
+                if construct == "UT" and group == "Transfected":
+                    continue
+                values = clean.loc[
+                    (clean["Metadata_Construct"] == construct)
+                    & (clean["Cell_group"] == group)
+                    & (clean["Replicate"] == replicate),
+                    "reporter_intensity",
+                ].dropna()
+                if values.empty:
+                    continue
+                y_center = y_base[index] + group_offsets[group] + point_offsets[replicate]
+                y_jitter = rng.normal(0, 0.014, len(values))
+                ax.scatter(
+                    values.to_numpy(dtype=float),
+                    y_center + y_jitter,
+                    s=4.0,
+                    color=REPLICATE_COLORS[replicate],
+                    alpha=0.42,
+                    linewidth=0,
+                    rasterized=True,
+                    zorder=2,
+                )
+
+    # Add replicate-level median markers as triangles for each construct/group.
+    for _, row in summary.iterrows():
+        construct = row["Metadata_Construct"]
+        group = row["Cell_group"]
+        replicate = row["Replicate"]
+        if construct == "UT" and group == "Transfected":
+            continue
+        if construct not in constructs or group not in group_offsets or replicate not in REPLICATE_COLORS:
+            continue
+        y = y_base[constructs.index(construct)] + group_offsets[group]
+        marker_y = y + point_offsets[replicate]
+        median = float(row["median_reporter_intensity"])
+        ax.scatter(
+            median,
+            marker_y,
+            s=16,
+            marker="^",
+            facecolor=MEDIAN_COLORS[replicate],
+            edgecolor="#111111",
+            linewidth=0.45,
+            zorder=5,
+        )
+
+    ax.set_yticks(y_base)
+    ax.set_yticklabels([CONSTRUCT_LABELS.get(c, c) for c in constructs], fontsize=8)
+    ax.set_xlabel("Reporter intensity (a.u.)", fontsize=9, fontweight="bold")
+    ax.set_ylabel("")
+
+    # Format the axes and use clean x-axis tick labels.
+    upper = max(0.12, float(clean["reporter_intensity"].quantile(0.999)) * 1.08)
+    upper = min(0.22, upper)
+    ax.set_xlim(0, upper)
+    x_ticks = np.arange(0, upper + 0.001, 0.05)
+    ax.set_xticks(x_ticks)
+    ax.set_xticklabels(["0" if tick == 0 else f"{tick:.2g}" for tick in x_ticks])
+    ax.set_ylim(-0.75, len(constructs) - 0.25)
+    ax.grid(axis="x", color="#E8E8E8", linewidth=0.6)
+    ax.grid(axis="y", visible=False)
+    for y in y_base[:-1] - 0.5:
+        ax.axhline(y, color="#F2F2F2", linewidth=0.6, zorder=0)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    ax.tick_params(axis="both", width=0.8, length=3)
+    add_prism_brackets(ax, constructs, y_base, group_offsets, upper)
+
+    # Build the two-row legend: replicate information on row 1, experimental
+    # groups on row 2.
+    replicate_handles = [
+        Line2D(
+            [0],
+            [0],
+            marker="o",
+            color="none",
+            markerfacecolor=color,
+            markeredgecolor="#111111",
+            markeredgewidth=0.45,
+            markersize=5,
+            label=replicate,
+        )
+        for replicate, color in REPLICATE_COLORS.items()
+        if replicate in replicates
+    ]
+    replicate_median_handle = Line2D(
+        [0],
+        [0],
+        color="#111111",
+        marker="^",
+        linestyle="None",
+        markerfacecolor="white",
+        markeredgecolor="#111111",
+        markeredgewidth=0.9,
+        markersize=5,
+        label="Replicate median",
+    )
+    overall_median_handle = Line2D(
+        [0],
+        [0],
+        color="#222222",
+        marker="|",
+        linestyle="None",
+        markeredgewidth=1.8,
+        markersize=14,
+        label="Overall median",
+    )
+    cell_group_handles = [
+        Patch(facecolor=CONDITION_COLORS["Transfected"], edgecolor="#111111", alpha=0.38, label="Transfected"),
+        Patch(facecolor=CONDITION_COLORS["Untransfected"], edgecolor="#111111", alpha=0.38, label="Untransfected"),
+    ]
+    replicate_legend = fig.legend(
+        handles=replicate_handles + [replicate_median_handle],
+        loc="upper left",
+        bbox_to_anchor=(0.205, 0.985),
+        frameon=False,
+        fontsize=7,
+        ncol=4,
+        columnspacing=1.05,
+        handlelength=1.1,
+        handletextpad=0.35,
+        borderaxespad=0.0,
+    )
+    fig.add_artist(replicate_legend)
+    fig.legend(
+        handles=[overall_median_handle] + cell_group_handles,
+        loc="upper left",
+        bbox_to_anchor=(0.205, 0.959),
+        frameon=False,
+        fontsize=7,
+        ncol=3,
+        columnspacing=1.0,
+        handlelength=1.1,
+        handletextpad=0.35,
+        borderaxespad=0.0,
+    )
+
+    fig.tight_layout(rect=[0, 0, 0.84, 0.945])
+    paths = [
+        CODEX_DIR / f"{OUTPUT_STEM}.png",
+        CODEX_DIR / f"{OUTPUT_STEM}.svg",
+        CODEX_DIR / f"{OUTPUT_STEM}.pdf",
+    ]
+    CODEX_DIR.mkdir(parents=True, exist_ok=True)
+    fig.savefig(paths[0], dpi=600, bbox_inches="tight")
+    fig.savefig(paths[1], bbox_inches="tight")
+    fig.savefig(paths[2], bbox_inches="tight")
+    plt.close(fig)
+    return paths
+
+
+# -----------------------------------------------------------------------------
+# Script entry point
+# This loads the cleaned dataset, writes the summary/significance CSV files,
+# generates the final figure files, and prints a short console summary.
+# -----------------------------------------------------------------------------
+def main() -> None:
+    clean = pd.read_csv(INPUT_CSV)
+    clean["reporter_intensity"] = pd.to_numeric(clean["reporter_intensity"], errors="coerce")
+    clean = clean.dropna(subset=["Metadata_Construct", "Cell_group", "Replicate", "reporter_intensity"])
+    summary = summarise(clean)
+    summary_path = CODEX_DIR / f"{OUTPUT_STEM}_summary.csv"
+    CODEX_DIR.mkdir(parents=True, exist_ok=True)
+    summary.to_csv(summary_path, index=False)
+    prism_mapping_dataframe().to_csv(SIGNIFICANCE_MAPPING, index=False)
+    figure_paths = make_plot(clean, summary)
+
+    print(f"Input used: {INPUT_CSV.resolve()}")
+    print(f"Rows plotted: {len(clean)}")
+    print(f"Summary saved: {summary_path.resolve()}")
+    print(f"Significance mapping saved: {SIGNIFICANCE_MAPPING.resolve()}")
+    print("Figures saved:")
+    for path in figure_paths:
+        print(f"  {path.resolve()}")
+    print("\nSummary preview:")
+    print(summary.head(18).to_string(index=False))
+
+
+if __name__ == "__main__":
+    main()
+
