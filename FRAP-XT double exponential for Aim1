@@ -1,0 +1,380 @@
+"""
+* Sheet1 row 2 contains "Time (S)" in column B.
+* Seven treatment names are stored in merged three-column headers:
+  Wild-type (C:E), GFP (F:H), dNTD (I:K), dCTD (L:N),
+  2M (O:Q), 3M (R:T), and FL (U:W).
+* Each of those three columns is a replicate-level average trace, where each
+  replicate average was previously calculated from five values. Those supplied
+  replicate averages are read directly; the five underlying values are not
+  reconstructed or re-averaged.
+* The plotted treatment centre line is the arithmetic mean of the three
+  replicate-average traces at each time point. The shaded band is the
+  between-replicate SEM: sample SD / sqrt(3), calculated across the three
+  replicate-average traces. It does not describe within-replicate variability
+  among the five underlying measurements.
+* The workbook contains no separate columns explicitly labelled SEM or error.
+
+A single-exponential recovery model is fitted to each treatment mean after the
+bleach event: F(t) = F0 + A × (1 − exp(−k × t)), where t is time since bleach.
+The fitted curve is plotted prominently. SEM bands remain based on the observed
+means and are not fitted.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import math
+from pathlib import Path
+
+import matplotlib as mpl
+import matplotlib.pyplot as plt
+import numpy as np
+from openpyxl import load_workbook
+from scipy.optimize import brentq, curve_fit
+
+
+DEFAULT_INPUT = Path(
+    r"C:\Users\adm956\OneDrive - University of Wollongong"
+    r"\Honours\FRAPXT_reporterconstructs_replicate_averages.xlsx"
+)
+DEFAULT_OUTPUT_DIR = Path(__file__).resolve().parent
+
+# Treatment colours and display labels match the supplied reference figure.
+COLORS = [
+    "#AA4AC4",  # WT: purple
+    "#00D91C",  # GFP: green
+    "#B8611C",  # ΔNTD: burnt orange
+    "#F18F8B",  # ΔCTD: salmon
+    "#52A6F2",  # 2M: blue
+    "#9E9E9E",  # 3M: grey
+    "#E60073",  # FL: magenta
+]
+
+DISPLAY_NAMES = {
+    "Wild-type": "WT",
+    "GFP": "GFP",
+    "dNTD": "ΔNTD",
+    "dCTD": "ΔCTD",
+    "2M": "2M",
+    "3M": "3M",
+    "FL": "FL",
+}
+
+
+def read_frap_workbook(path: Path):
+    """Read the time vector and three replicate-average traces per treatment."""
+    workbook = load_workbook(path, read_only=False, data_only=True)
+    worksheet = workbook["FRAPxt replicate averages"]
+
+    time_header = worksheet["B2"].value
+    if not isinstance(time_header, str) or not time_header.lower().startswith("time"):
+        raise ValueError(f"Expected the time header in B2; found {time_header!r}.")
+
+    treatment_starts = {
+        "Wild-type": 3,  # C:E
+        "GFP": 6,        # F:H
+        "dNTD": 9,       # I:K
+        "dCTD": 12,      # L:N
+        "2M": 15,        # O:Q
+        "3M": 18,        # R:T
+        "FL": 21,        # U:W
+    }
+
+    # Confirm that the merged header labels match the expected workbook layout.
+    for treatment, start_column in treatment_starts.items():
+        found = worksheet.cell(row=2, column=start_column).value
+        if found != treatment:
+            raise ValueError(
+                f"Expected treatment {treatment!r} at row 2, column "
+                f"{start_column}; found {found!r}."
+            )
+
+    times = []
+    treatment_rows = {name: [] for name in treatment_starts}
+    for row in range(3, worksheet.max_row + 1):
+        time_value = worksheet.cell(row=row, column=2).value
+        if time_value is None:
+            continue
+        times.append(float(time_value))
+        for treatment, start_column in treatment_starts.items():
+            values = [
+                worksheet.cell(row=row, column=column).value
+                for column in range(start_column, start_column + 3)
+            ]
+            if any(value is None for value in values):
+                raise ValueError(
+                    f"Missing replicate-average value for {treatment} at row {row}."
+                )
+            treatment_rows[treatment].append([float(value) for value in values])
+
+    workbook.close()
+    time = np.asarray(times, dtype=float)
+    replicates = {
+        name: np.asarray(rows, dtype=float) for name, rows in treatment_rows.items()
+    }
+    return time_header, time, replicates
+
+
+def estimate_bleach_time(time: np.ndarray, replicates: dict[str, np.ndarray]) -> float:
+    """
+    Locate the bleach transition from the steepest negative step in each trace.
+
+    The event time is the median of the 21 independently detected transition
+    times. This calculation is only used to position the annotation; it does
+    not alter, smooth, or fit the fluorescence data.
+    """
+    transition_times = []
+    for matrix in replicates.values():
+        for replicate_index in range(matrix.shape[1]):
+            transition_index = int(np.argmin(np.diff(matrix[:, replicate_index])))
+            transition_times.append(time[transition_index + 1])
+    return float(np.median(transition_times))
+
+
+def recovery_model(
+    time_since_bleach: np.ndarray,
+    f0: float,
+    fast_amplitude: float,
+    slow_amplitude: float,
+    slow_rate: float,
+    rate_difference: float,
+) -> np.ndarray:
+    """Constrained double-exponential FRAP recovery model (kfast > kslow)."""
+    fast_rate = slow_rate + rate_difference
+    return (
+        f0
+        + fast_amplitude * (1.0 - np.exp(-fast_rate * time_since_bleach))
+        + slow_amplitude * (1.0 - np.exp(-slow_rate * time_since_bleach))
+    )
+
+
+def fit_recovery(time: np.ndarray, mean_trace: np.ndarray, bleach_index: int):
+    """Fit a constrained double-exponential model to the post-bleach mean trace."""
+    recovery_time = time[bleach_index:] - time[bleach_index]
+    recovery_signal = mean_trace[bleach_index:]
+    f0_guess = float(np.mean(recovery_signal[:10]))
+    plateau_guess = float(np.mean(recovery_signal[-200:]))
+    amplitude_guess = max(plateau_guess - f0_guess, 0.01)
+    parameters, _ = curve_fit(
+        recovery_model,
+        recovery_time,
+        recovery_signal,
+        p0=(f0_guess, amplitude_guess * 0.65, amplitude_guess * 0.35, 0.35, 2.0),
+        bounds=([0.0, 0.0, 0.0, 0.0001, 0.0001], [1.5, 1.5, 1.5, 100.0, 100.0]),
+        maxfev=100000,
+    )
+    return parameters, recovery_time
+
+
+def summarise_fit(parameters: np.ndarray, recovery_time: np.ndarray, signal: np.ndarray):
+    """Return model parameters, half-recovery time, and R²."""
+    f0, fast_amplitude, slow_amplitude, slow_rate, rate_difference = parameters
+    fast_rate = slow_rate + rate_difference
+    plateau = f0 + fast_amplitude + slow_amplitude
+    total_recovery_amplitude = fast_amplitude + slow_amplitude
+    halfway = f0 + (plateau - f0) / 2.0
+    half_time = float(
+        brentq(
+            lambda point: recovery_model(np.asarray([point]), *parameters)[0] - halfway,
+            0.0,
+            max(float(recovery_time[-1]) * 10.0, 1.0),
+        )
+    )
+    fitted = recovery_model(recovery_time, *parameters)
+    residual_sum = float(np.sum((signal - fitted) ** 2))
+    total_sum = float(np.sum((signal - np.mean(signal)) ** 2))
+    return {
+        "F0": float(f0), "Afast": float(fast_amplitude), "Aslow": float(slow_amplitude),
+        "kfast_s_inv": float(fast_rate), "kslow_s_inv": float(slow_rate),
+        "plateau": float(plateau), "t_half_s": half_time,
+        "fast_t_half_s": float(math.log(2.0) / fast_rate),
+        "slow_t_half_s": float(math.log(2.0) / slow_rate),
+        "fast_fraction_of_recovery": float(fast_amplitude / total_recovery_amplitude),
+        "slow_fraction_of_recovery": float(slow_amplitude / total_recovery_amplitude),
+        "r_squared": float(1.0 - residual_sum / total_sum) if total_sum else float("nan"),
+    }
+
+
+def make_plot(
+    input_path: Path,
+    output_dir: Path,
+    png_name: str = "FRAP_XT_recovery_double_exponential_fit_600dpi.png",
+    svg_name: str = "FRAP_XT_recovery_double_exponential_fit.svg",
+):
+    """Calculate treatment-level summaries and export PNG and SVG figures."""
+    time_header, time, replicates = read_frap_workbook(input_path)
+    bleach_time = estimate_bleach_time(time, replicates)
+
+    mpl.rcParams.update(
+        {
+            "font.family": "Arial",
+            "font.size": 7.5,
+            "axes.labelsize": 8.5,
+            "axes.linewidth": 0.75,
+            "xtick.labelsize": 7,
+            "ytick.labelsize": 7,
+            "legend.fontsize": 6.7,
+            "svg.fonttype": "none",
+        }
+    )
+
+    figure, axis = plt.subplots(figsize=(4.25, 3.65))
+    figure.subplots_adjust(left=0.17, right=0.98, bottom=0.16, top=0.85)
+    figure.patch.set_facecolor("white")
+    axis.set_facecolor("white")
+
+    all_upper_values = []
+    bleach_index = int(np.searchsorted(time, bleach_time, side="left"))
+    fitted_parameters = {}
+    export_data = {
+        "bleach_time_s": float(bleach_time),
+        "time_since_bleach_s": (time[bleach_index:] - bleach_time).tolist(),
+        "replicates": {}, "means": {}, "sems": {},
+        "fitted_curves": {}, "parameters": {}, "replicate_parameters": {},
+    }
+
+    for (treatment, matrix), color in zip(replicates.items(), COLORS):
+        # The three input columns are replicate-level means. This is the mean
+        # and between-replicate SEM across those three supplied traces (n=3).
+        treatment_mean = np.mean(matrix, axis=1)
+        treatment_sem = np.std(matrix, axis=1, ddof=1) / math.sqrt(matrix.shape[1])
+        lower = treatment_mean - treatment_sem
+        upper = treatment_mean + treatment_sem
+        all_upper_values.append(upper)
+        parameters, recovery_time = fit_recovery(
+            time, treatment_mean, bleach_index
+        )
+        recovery_signal = treatment_mean[bleach_index:]
+        fit_summary = summarise_fit(parameters, recovery_time, recovery_signal)
+        fitted_parameters[treatment] = fit_summary
+        fitted_values = recovery_model(recovery_time, *parameters)
+        export_data["replicates"][treatment] = matrix[bleach_index:].tolist()
+        export_data["means"][treatment] = recovery_signal.tolist()
+        export_data["sems"][treatment] = treatment_sem[bleach_index:].tolist()
+        export_data["fitted_curves"][treatment] = fitted_values.tolist()
+        export_data["parameters"][treatment] = fit_summary
+        export_data["replicate_parameters"][treatment] = []
+        for replicate_index in range(matrix.shape[1]):
+            replicate_signal = matrix[bleach_index:, replicate_index]
+            replicate_parameters, replicate_time = fit_recovery(
+                time, matrix[:, replicate_index], bleach_index
+            )
+            export_data["replicate_parameters"][treatment].append(
+                summarise_fit(replicate_parameters, replicate_time, replicate_signal)
+            )
+
+        axis.fill_between(
+            time,
+            lower,
+            upper,
+            color=color,
+            alpha=0.24,
+            linewidth=0,
+            zorder=1,
+        )
+        # Prominent curve is a fitted, single-exponential FRAP recovery model.
+        axis.plot(
+            time[bleach_index:],
+            fitted_values,
+            color=color,
+            linewidth=1.25,
+            label=DISPLAY_NAMES[treatment],
+            zorder=3,
+        )
+
+    y_upper_data = float(np.nanmax(np.concatenate(all_upper_values)))
+    y_upper = math.ceil((y_upper_data + 0.025) * 20) / 20
+    y_upper = max(1.10, y_upper)
+    axis.set_ylim(0, y_upper)
+    axis.set_xlim(float(time.min()), float(time.max()))
+
+    axis.set_xlabel(time_header)
+    axis.set_ylabel("Average normalised fluorescence intensity")
+    axis.set_xticks(np.arange(0, math.floor(time.max()) + 1, 1.0))
+    axis.set_yticks(np.arange(0, y_upper + 0.001, 0.2))
+    axis.tick_params(direction="out", length=2.8, width=0.7, color="#222222")
+    axis.spines["top"].set_visible(False)
+    axis.spines["right"].set_visible(False)
+    axis.spines["left"].set_color("#333333")
+    axis.spines["bottom"].set_color("#333333")
+    axis.grid(False)
+
+    legend = axis.legend(
+        frameon=False,
+        ncol=2,
+        loc="lower right",
+        # Bottom of legend aligns with y = 1.0 on the plotted y-axis.
+        bbox_to_anchor=(1.0, 1.0 / y_upper),
+        handlelength=1.65,
+        labelspacing=0.35,
+        columnspacing=0.95,
+        borderaxespad=0.0,
+        prop={"family": "Arial", "size": 7.5},
+    )
+    for handle in legend.legend_handles:
+        handle.set_linewidth(1.25)
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    png_path = output_dir / png_name
+    svg_path = output_dir / svg_name
+    figure.savefig(
+        png_path,
+        dpi=600,
+        facecolor="white",
+        bbox_inches="tight",
+        metadata={
+            "Title": "FRAP-XT recovery",
+            "Description": (
+                "Mean and between-replicate SEM across three replicate-average "
+                "traces per treatment. Bold recovery curves are fitted "
+                "double-exponential FRAP "
+                "models. SEM bands are based on observed means."
+            ),
+        },
+    )
+    figure.savefig(svg_path, facecolor="white", bbox_inches="tight")
+    plt.close(figure)
+
+    print(f"Input: {input_path}")
+    print(f"Time points: {len(time)}; range: {time.min():g} to {time.max():g}")
+    print(f"Treatments: {', '.join(replicates)}")
+    print("Replicate-average traces per treatment: 3")
+    print(f"Detected bleach transition: {bleach_time:g}")
+    for treatment, fit_summary in fitted_parameters.items():
+        print(
+            f"{treatment}: F0={fit_summary['F0']:.4f}, "
+            f"Afast={fit_summary['Afast']:.4f}, Aslow={fit_summary['Aslow']:.4f}, "
+            f"kfast={fit_summary['kfast_s_inv']:.4f} s^-1, "
+            f"kslow={fit_summary['kslow_s_inv']:.4f} s^-1, "
+            f"fast t1/2={fit_summary['fast_t_half_s']:.4f} s, "
+            f"slow t1/2={fit_summary['slow_t_half_s']:.4f} s, "
+            f"fast fraction={fit_summary['fast_fraction_of_recovery']:.2%}, "
+            f"slow fraction={fit_summary['slow_fraction_of_recovery']:.2%}, "
+            f"R²={fit_summary['r_squared']:.4f}"
+        )
+    export_path = output_dir.parent / "work" / "frapxt_double_exponential_export.json"
+    export_path.parent.mkdir(parents=True, exist_ok=True)
+    export_path.write_text(json.dumps(export_data, indent=2), encoding="utf-8")
+    print(f"Prism export data: {export_path}")
+    print(f"PNG: {png_path}")
+    print(f"SVG: {svg_path}")
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "input",
+        nargs="?",
+        type=Path,
+        default=DEFAULT_INPUT,
+        help="Path to FRAPXT_AVERAGES.xlsx",
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=DEFAULT_OUTPUT_DIR,
+        help="Directory for the PNG and SVG outputs",
+    )
+    arguments = parser.parse_args()
+    make_plot(arguments.input, arguments.output_dir)
