@@ -1,0 +1,58 @@
+"""Render full WT/GFP/3R FRAP time courses, SEM, and post-bleach double-exp fits."""
+import json
+from pathlib import Path
+import matplotlib as mpl
+import matplotlib.pyplot as plt
+import numpy as np
+from openpyxl import load_workbook
+
+INPUT = Path(r"C:\Users\adm956\Documents\Codex\2026-09-07\usin\work\current_frap_double_exponential_fit.json")
+SOURCE = Path(r"C:\Users\adm956\Documents\Codex\2026-09-07\usin\outputs\Combined_original_normalised_FRAP_data.xlsx")
+OUTPUT = Path(r"C:\Users\adm956\Documents\Codex\2026-09-07\usin\outputs")
+COLORS = {"WT": "#AB4BC4", "GFP": "#1BDD34", "3R": "#BA6622"}
+SHEETS = {"WT": ["WT 1", "WT 2"], "GFP": ["GFP 1", "GFP 2"], "3R": ["3R 1", "3R 2"]}
+
+data = json.loads(INPUT.read_text(encoding="utf-8"))
+book = load_workbook(SOURCE, read_only=True, data_only=True)
+full_time = None
+observed = {}
+for treatment, sheet_names in SHEETS.items():
+    traces = []
+    for sheet_name in sheet_names:
+        rows = list(book[sheet_name].iter_rows(values_only=True))
+        values = np.asarray(rows[1:], dtype=float)
+        if full_time is None:
+            full_time = values[:, 0]
+        traces.append(values[:, 1])
+    matrix = np.column_stack(traces)
+    observed[treatment] = (np.mean(matrix, axis=1), np.std(matrix, axis=1, ddof=1) / np.sqrt(matrix.shape[1]))
+book.close()
+post_time = np.asarray(data["time_since_bleach"], dtype=float) + data["bleach_time"]
+mpl.rcParams.update({"font.family": "Arial", "font.size": 9, "axes.labelsize": 10, "axes.linewidth": 0.8, "xtick.labelsize": 8.5, "ytick.labelsize": 8.5, "legend.fontsize": 16, "svg.fonttype": "none"})
+fig, ax = plt.subplots(figsize=(7.1, 4.7), constrained_layout=True)
+fig.patch.set_facecolor("white")
+ax.set_facecolor("white")
+upper = []
+for treatment in ("WT", "GFP", "3R"):
+    group = data["constructs"][treatment]
+    mean, sem = observed[treatment]
+    fitted = np.asarray(group["mean_fit"]["fitted"], dtype=float)
+    color = COLORS[treatment]
+    upper.append(mean + sem)
+    ax.fill_between(full_time, mean - sem, mean + sem, color=color, alpha=0.19, linewidth=0, zorder=1)
+    ax.plot(post_time, fitted, color=color, linewidth=1.8, label=treatment, zorder=2)
+ax.set_xlim(float(full_time.min()), float(full_time.max()))
+ax.set_ylim(0, max(1.1, np.ceil((np.max(np.concatenate(upper)) + .025) * 20) / 20))
+ax.set_xlabel("Time (s)")
+ax.set_ylabel("Average normalised fluorescence intensity")
+ax.set_xticks(np.arange(0, np.floor(full_time.max()) + 1, 1.0))
+ax.set_yticks(np.arange(0, ax.get_ylim()[1] + .001, .2))
+ax.tick_params(direction="out", length=3.5, width=.8, color="#333333")
+ax.spines["top"].set_visible(False); ax.spines["right"].set_visible(False)
+ax.spines["left"].set_color("#333333"); ax.spines["bottom"].set_color("#333333")
+ax.grid(False)
+ax.legend(frameon=False, ncol=3, loc="upper right", handlelength=2.2, columnspacing=1.2, borderaxespad=.5, fontsize=16)
+OUTPUT.mkdir(parents=True, exist_ok=True)
+fig.savefig(OUTPUT / "FRAP_WT_GFP_3R_double_exponential_fit_600dpi.png", dpi=600, facecolor="white", bbox_inches="tight")
+fig.savefig(OUTPUT / "FRAP_WT_GFP_3R_double_exponential_fit.svg", facecolor="white", bbox_inches="tight")
+plt.close(fig)
