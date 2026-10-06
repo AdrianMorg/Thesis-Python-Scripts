@@ -1,0 +1,103 @@
+import json
+from pathlib import Path
+
+import matplotlib.pyplot as plt
+from matplotlib.lines import Line2D
+from matplotlib.patches import Patch, Rectangle
+from matplotlib.ticker import PercentFormatter
+import numpy as np
+
+WORK = Path(r"C:\Users\adm956\Documents\Codex\2026-08-31\is-th\work\tdp43_violin")
+OUT = Path(r"C:\Users\adm956\Documents\Codex\2026-08-31\is-th\outputs\tdp43_violin_plot")
+OUT.mkdir(parents=True, exist_ok=True)
+
+with (WORK / "data.json").open(encoding="utf-8") as f:
+    records = json.load(f)
+
+constructs = ["WT", "3R", "dNLS", "dNLS/3R", "K82Q", "K82Q/3R"]
+timepoints = ["2 days", "6 days"]
+replicates = ["Replicate 1", "Replicate 2"]
+time_colors = {"2 days": "#5B9BD5", "6 days": "#E56B7F"}
+rep_colors = {"Replicate 1": "#6B4C9A", "Replicate 2": "#D28E2D"}
+
+grouped = {}
+for rec in records:
+    grouped.setdefault((rec["construct"], rec["timepoint"], rec["replicate"]), []).append(rec["value"])
+
+plt.rcParams.update({
+    "font.family": "Arial",
+    "font.size": 9,
+    "axes.titlesize": 14,
+    "axes.labelsize": 11,
+    "xtick.labelsize": 11,
+    "ytick.labelsize": 11,
+    "svg.fonttype": "none",
+})
+fig, ax = plt.subplots(figsize=(6.4, 10.8), constrained_layout=True)
+rng = np.random.default_rng(4302)
+for ci, construct in enumerate(constructs):
+    base = len(constructs) - 1 - ci
+    for timepoint in timepoints:
+        center = base
+        combined = np.array(grouped[(construct, timepoint, "Replicate 1")] + grouped[(construct, timepoint, "Replicate 2")])
+        violin = ax.violinplot([combined], positions=[center], widths=0.62, vert=False,
+                               showmeans=False, showmedians=False, showextrema=False, bw_method=0.22)
+        for body in violin["bodies"]:
+            body.set_facecolor(time_colors[timepoint])
+            body.set_edgecolor("#202020")
+            body.set_linewidth(0.9)
+            body.set_alpha(0.88)
+            if timepoint == "2 days":
+                clip = Rectangle((-0.02, center), 1.10, 0.36, transform=ax.transData)
+            else:
+                clip = Rectangle((-0.02, center - 0.36), 1.10, 0.36, transform=ax.transData)
+            body.set_clip_path(clip)
+        overall_median = np.median(combined)
+        median_span = [center, center + 0.36] if timepoint == "2 days" else [center - 0.36, center]
+        median_line = ax.plot([overall_median, overall_median], median_span,
+                              color="black", linewidth=1.1, solid_capstyle="butt", zorder=4)[0]
+        median_line.set_clip_path(body.get_paths()[0], body.get_transform())
+        for ri, replicate in enumerate(replicates):
+            vals = np.asarray(grouped[(construct, timepoint, replicate)])
+            if timepoint == "2 days":
+                jitter = rng.uniform(0.035, 0.225, size=len(vals))
+                median_y = center + (0.095 if ri == 0 else 0.19)
+            else:
+                jitter = rng.uniform(-0.225, -0.035, size=len(vals))
+                median_y = center - (0.095 if ri == 0 else 0.19)
+            ax.scatter(vals, center + jitter, s=10, c=rep_colors[replicate], alpha=0.68,
+                       edgecolors="white", linewidths=0.2, zorder=3)
+            ax.scatter(np.median(vals), median_y, marker="D", s=38, c=rep_colors[replicate],
+                       edgecolors="black", linewidths=0.75, zorder=5)
+
+ax.set_xlabel("TDP-43 in the nucleus (%)", labelpad=8)
+ax.set_ylabel("")
+ax.set_yticks(range(len(constructs)), list(reversed(constructs)))
+ax.xaxis.set_major_formatter(PercentFormatter(xmax=1.0, decimals=0))
+ax.set_xlim(0, 1.04)
+ax.set_ylim(-0.6, len(constructs) - 0.4)
+ax.grid(axis="x", color="#D7D7D7", linewidth=0.6, alpha=0.75)
+ax.set_axisbelow(True)
+ax.spines["top"].set_visible(False)
+ax.spines["right"].set_visible(False)
+ax.spines["left"].set_color("#6B7785")
+ax.spines["bottom"].set_color("#6B7785")
+for y in np.arange(0.5, len(constructs) - 0.4, 1):
+    ax.axhline(y, color="#9A9A9A", linewidth=0.55, alpha=0.65)
+
+legend_items = [
+    Patch(facecolor=time_colors["2 days"], edgecolor="#3A4856", label="2 days"),
+    Patch(facecolor=time_colors["6 days"], edgecolor="#3A4856", label="6 days"),
+    Line2D([0], [0], marker="o", color="none", markerfacecolor=rep_colors["Replicate 1"], markeredgecolor="white", markersize=9, label="Replicate 1 data"),
+    Line2D([0], [0], marker="o", color="none", markerfacecolor=rep_colors["Replicate 2"], markeredgecolor="white", markersize=9, label="Replicate 2 data"),
+    Line2D([0], [0], marker="D", color="none", markerfacecolor="#FFFFFF", markeredgecolor="black", markersize=9, label="Replicate median"),
+    Line2D([0], [0], color="black", linewidth=1.65, solid_capstyle="butt", label="Combined median"),
+]
+ax.legend(handles=legend_items, loc="lower center", bbox_to_anchor=(0.5, 1.012), ncol=3,
+          frameon=False, fontsize=12, handletextpad=0.75, columnspacing=1.65)
+for suffix in ["png", "svg"]:
+    fig.savefig(OUT / f"TDP43_nuclear_violin_2d_vs_6d.{suffix}", dpi=600 if suffix == "png" else None,
+                bbox_inches="tight", facecolor="white")
+fig.savefig(WORK / "workbook_plot.png", dpi=150, bbox_inches="tight", facecolor="white")
+plt.close(fig)
+print(OUT)
