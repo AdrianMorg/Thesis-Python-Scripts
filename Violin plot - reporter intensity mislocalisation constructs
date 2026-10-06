@@ -1,0 +1,128 @@
+from pathlib import Path
+import pandas as pd
+import numpy as np
+
+base = Path(__file__).resolve().parent
+out = base.parent / 'outputs'
+source = Path(r'C:\Users\adm956\OneDrive - University of Wollongong\Honours\Reporter analysis mislocalisation constructs offline.xlsx')
+sheets = pd.read_excel(source, sheet_name=None)
+frames = []
+for name, frame in sheets.items():
+    if 'pivot' in name.lower():
+        continue
+    group = 'Transfected' if name == 'AllTransfectedCells' else 'Untransfected'
+    frame = frame.copy()
+    frame['Cell_group'] = group
+    frame['Source_sheet'] = name
+    frame['reporter_intensity'] = pd.to_numeric(frame['Intensity_MeanIntensity_Rep'], errors='coerce')
+    frames.append(frame)
+clean = pd.concat(frames, ignore_index=True)
+assert len(clean) == 21833
+assert clean[['Metadata_Construct', 'Metadata_Date', 'reporter_intensity']].notna().all().all()
+assert np.isfinite(clean.reporter_intensity).all()
+clean = clean.loc[~((clean['Metadata_Construct'] == 'UT') & (clean['Cell_group'] == 'Transfected'))].copy()
+assert len(clean) == 21789
+dates = sorted(clean.Metadata_Date.unique())
+mapping = {d:f'Replicate {i+1}' for i,d in enumerate(dates)}
+clean['Replicate'] = clean.Metadata_Date.map(mapping)
+
+style = (base / 'reference_style.py').read_text(encoding='utf-8')
+style = style.replace('figsize=(6.45, 7.4)', 'figsize=(4.8, 7.5)')
+style = style.replace('figsize=(4.8, 7.5)', 'figsize=(9.2, 7.5)')
+style = style.replace('y_base = np.arange(len(constructs))[::-1]', 'y_base = np.arange(len(constructs))[::-1] * 1.3')
+style = style.replace('ax.set_ylim(-0.75, len(constructs) - 0.25)', 'ax.set_ylim(-0.75, float(y_base.max()) + 0.75)')
+style = style.replace('y_base[:-1] - 0.5', 'y_base[:-1] - 0.65')
+style = style.replace('widths=0.34,', 'widths=0.44,')
+style = style.replace('"Replicate 1": 0.065,\n        "Replicate 2": 0.0,', '"Replicate 1": 0.040,\n        "Replicate 2": -0.040,')
+style = style.replace('"Transfected": 0.18, "Untransfected": -0.18', '"Transfected": 0.23, "Untransfected": -0.23')
+style = style.replace('y - 0.17,', 'y - 0.22,').replace('y + 0.17,', 'y + 0.22,')
+style = style.replace('CONSTRUCT_ORDER = ["WT", "NTD", "CTD", "2M", "3M", "FL", "GFP", "UT"]', 'CONSTRUCT_ORDER = ["WT", "3R", "K82Q", "K82Q3R", "dNLS", "dNLS3R", "GFP", "UT"]')
+style = style.replace('if construct == "UT" and group == "Transfected":', 'if False:')
+style = style.replace('    add_prism_brackets(ax, constructs, y_base, group_offsets, upper)', '    add_prism_brackets(ax, constructs, y_base, group_offsets, upper)')
+style = style.replace('    upper = min(0.22, upper)', '    upper = float(clean["reporter_intensity"].max()) * 1.02')
+style = style.replace('x_ticks = np.arange(0, upper + 0.001, 0.05)', 'x_ticks = np.arange(0, upper + 0.001, 0.2)')
+style = style.replace('fig.tight_layout(rect=[0, 0, 0.84, 0.945])', 'ax.set_position([0.20, 0.085, 0.49, 0.82])')
+style = style.replace('"GFP reference": upper * 1.045,', '"GFP reference": upper * 1.05,')
+style = style.replace('"WT reference": upper * 1.315,', '"WT reference": upper * 1.2145,')
+style = style.replace('y_high + 0.24,', 'y_high + (0.48 if family == "WT reference" else 0.24),')
+style = style.replace('"Sig vs GFP" if family == "GFP reference" else "Sig vs WT",', '"",')
+style = style.replace('label_size = 8.4', 'label_size = 11.8')
+style = style.replace('ncol=4,', 'ncol=3,')
+legend_start = style.index('    # Build the two-row legend:')
+legend_end = style.index('    ax.set_position([0.20, 0.085, 0.49, 0.82])', legend_start)
+style = style[:legend_start] + '''    # Three aligned legend columns.
+    condition_handles = [
+        Patch(facecolor=CONDITION_COLORS[group], edgecolor="#111111", alpha=0.38, label=group)
+        for group in ("Transfected", "Untransfected")
+    ]
+    replicate_handles = [
+        Line2D([0], [0], marker="o", linestyle="None", color="none",
+               markerfacecolor=REPLICATE_COLORS[replicate], markeredgecolor="#111111",
+               markeredgewidth=0.45, markersize=5, label=replicate)
+        for replicate in ("Replicate 1", "Replicate 2")
+    ]
+    median_handles = [
+        Line2D([0], [0], marker="^", linestyle="None", color="none",
+               markerfacecolor="white", markeredgecolor="#111111",
+               markeredgewidth=0.9, markersize=5, label="Replicate median"),
+        Line2D([0], [0], marker="|", linestyle="None", color="#222222",
+               markeredgewidth=1.8, markersize=14, label="Overall median"),
+    ]
+    for x, handles in ((0.205, condition_handles), (0.34, replicate_handles), (0.475, median_handles)):
+        fig.legend(handles=handles, loc="upper left", bbox_to_anchor=(x, 0.985),
+                   frameon=False, fontsize=11.2, ncol=1, labelspacing=0.65,
+                   handlelength=1.25, handletextpad=0.55, borderaxespad=0)
+
+''' + style[legend_end:]
+prism = [
+    ('GFP reference','GFP','WT','**',0.0012),
+    ('GFP reference','GFP','3R','**',0.0036),
+    ('GFP reference','GFP','K82Q','*',0.0113),
+    ('GFP reference','GFP','K82Q3R','**',0.0029),
+    ('GFP reference','GFP','dNLS','**',0.0019),
+    ('GFP reference','GFP','dNLS3R','**',0.0030),
+    ('WT reference','WT','3R','ns',0.7185),
+    ('WT reference','WT','K82Q','ns',0.2220),
+    ('WT reference','WT','K82Q3R','ns',0.8358),
+    ('WT reference','WT','GFP','**',0.0012),
+    ('WT reference','WT','dNLS','ns',0.9856),
+    ('WT reference','WT','dNLS3R','ns',0.8315),
+]
+start = style.index('PRISM_SIGNIFICANCE = [')
+end = style.index('\n\n\n# -----------------------------------------------------------------------------\n# Summary table creation', start)
+style = style[:start] + 'PRISM_SIGNIFICANCE = ' + repr([
+    {'family':fam,'group_1':ref,'group_2':target,'significance':sig,'adjusted_p_value':p,
+     'comparison':f'{ref} trans vs. {target} trans','mean_difference':0.0}
+    for fam,ref,target,sig,p in prism
+]) + style[end:]
+namespace = {'__name__':'reference_style', '__file__':str(base / 'reference_style.py')}
+exec(compile(style, 'reference_style.py', 'exec'), namespace)
+namespace['CODEX_DIR'] = out
+namespace['OUTPUT_STEM'] = 'reporter_mislocalisation_violin'
+namespace['CONSTRUCT_LABELS'].update({
+    '3R':r'TDP-43$^{3R}$',
+    'K82Q':r'TDP-43$^{K82Q}$',
+    'K82Q3R':r'TDP-43$^{K82Q,3R}$',
+    'dNLS':r'TDP-43$^{\Delta NLS}$',
+    'dNLS3R':r'TDP-43$^{\Delta NLS,3R}$',
+})
+summary = namespace['summarise'](clean)
+namespace['make_plot'](clean, summary)
+summary.to_csv(out / 'reporter_mislocalisation_summary.csv', index=False)
+clean[['Source_sheet','ImageNumber','ObjectNumber','Metadata_Construct','Metadata_Date','Replicate','Cell_group','reporter_intensity']].to_csv(out / 'reporter_mislocalisation_data_used.csv',index=False)
+(out / 'reporter_mislocalisation_plot_notes.txt').write_text(
+    'Source: '+source.name+'\n'
+    'Included sheets: AllTransfectedCells; Untransfected cells. Pivot sheets excluded.\n'
+    'Measure: Intensity_MeanIntensity_Rep, unchanged (a.u.).\n'
+    '21,789 rows retained; 44 UT-labelled transfected-sheet cells excluded. No outlier removal, normalisation or deduplication.\n'
+    'Replicate 1: 24 August 2026 (260824); Replicate 2: 31 August 2026 (260831).\n'
+    'Colours identify source-sheet cell classification; UT contains only untransfected-sheet cells.\n'
+    'Violin distributions pool individual cells; triangles show within-date medians; black lines show pooled medians.\n'
+    'Kernel bandwidth: 0.25; full observed intensity range displayed.\n'
+    'Significance annotations copied from the supplied Dunnett multiple comparisons screenshots.\n',encoding='utf-8')
+from PIL import Image
+im = Image.open(out / 'reporter_mislocalisation_violin.png')
+im.thumbnail((1200,1500))
+im.save(base / 'preview.png')
+print('Rows plotted:',len(clean))
+print(summary.to_string(index=False))
