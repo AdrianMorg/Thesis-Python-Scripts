@@ -1,0 +1,132 @@
+
+Requirements:
+    pip install numpy matplotlib openpyxl scipy
+"""
+
+from pathlib import Path
+
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import numpy as np
+from openpyxl import load_workbook
+from scipy.optimize import curve_fit
+
+
+HERE = Path(__file__).resolve().parent
+WORKBOOK = HERE / "EA_combined_normalized_dose_response_log2.xlsx"
+PNG_OUTPUT = HERE / "EA_log2_dose_response_publication_uncapped.png"
+PDF_OUTPUT = HERE / "EA_log2_dose_response_publication_uncapped.pdf"
+
+
+def four_parameter_logistic(dose, bottom, top, ic50, hill_slope):
+    """Four-parameter decreasing log-logistic dose-response model."""
+    return bottom + (top - bottom) / (1 + (dose / ic50) ** hill_slope)
+
+
+def main():
+    workbook = load_workbook(WORKBOOK, data_only=True)
+
+    # Recalculate uncapped normalization from the raw worksheets. Treatment 01
+    # is used only as each experiment's normalization reference and is excluded
+    # from the plotted and fitted data.
+    treatments = [10, 9, 8, 7, 6, 5, 4, 3, 2]
+    doses = np.array([1.171875, 2.34375, 4.6875, 9.375, 18.75,
+                      37.5, 75, 150, 300])
+    normalized_experiments = []
+
+    for experiment in range(1, 4):
+        sheet = workbook[f"Raw Rep {experiment}"]
+        grouped = {treatment: [] for treatment in range(1, 14)}
+
+        for row in sheet.iter_rows(min_row=2, values_only=True):
+            confluency, _, treatment, *_ = row
+            if isinstance(confluency, (int, float)) and treatment in grouped:
+                grouped[treatment].append(float(confluency))
+
+        untreated_mean = np.mean(grouped[1])
+        normalized_experiments.append([
+            np.mean(grouped[treatment]) / untreated_mean * 100
+            for treatment in treatments
+        ])
+
+    normalized_experiments = np.asarray(normalized_experiments)
+    response = normalized_experiments.mean(axis=0)
+    sem = normalized_experiments.std(axis=0, ddof=1) / np.sqrt(3)
+
+    parameters, _ = curve_fit(
+        four_parameter_logistic,
+        doses,
+        response,
+        p0=[response.min(), response.max(), np.median(doses), 1],
+        bounds=([0, 0, doses.min() / 100, 0.01],
+                [200, 200, doses.max() * 100, 10]),
+        sigma=np.maximum(sem, 0.5),
+        absolute_sigma=True,
+        maxfev=50_000,
+    )
+
+    plt.rcParams.update({
+        "font.family": "Arial",
+        "font.size": 9,
+        "axes.labelsize": 10,
+        "xtick.labelsize": 8,
+        "ytick.labelsize": 9,
+        "legend.fontsize": 8.5,
+        "axes.linewidth": 0.9,
+        "pdf.fonttype": 42,
+        "ps.fonttype": 42,
+    })
+
+    fig, ax = plt.subplots(figsize=(6.6, 4.5), constrained_layout=True)
+    fit_doses = np.geomspace(doses.min(), doses.max(), 600)
+    fit_line, = ax.plot(
+        fit_doses,
+        four_parameter_logistic(fit_doses, *parameters),
+        color="#222222",
+        linewidth=1.6,
+        zorder=2,
+    )
+    data_points = ax.errorbar(
+        doses,
+        response,
+        yerr=sem,
+        fmt="o",
+        markersize=4.6,
+        markerfacecolor="white",
+        markeredgecolor="#222222",
+        markeredgewidth=1.1,
+        ecolor="#555555",
+        elinewidth=0.9,
+        capsize=2.5,
+        capthick=0.9,
+        zorder=3,
+    )
+
+    ax.set_xscale("log", base=2)
+    ax.set_xticks(doses, ["1.17", "2.34", "4.69", "9.38", "18.75",
+                           "37.5", "75", "150", "300"])
+    ax.set_xlim(doses.min() / 1.2, doses.max() * 1.2)
+    ax.set_ylim(0, 120)
+    ax.set_yticks(np.arange(0, 121, 20))
+    ax.set_xlabel(r"EA concentration (log$_2$ scale)")
+    ax.set_ylabel("Confluency (% of untreated control)")
+    ax.spines[["top", "right"]].set_visible(False)
+    ax.tick_params(direction="out", length=3.5, width=0.9)
+    ax.grid(False)
+    ax.legend(
+        [data_points, fit_line],
+        ["Mean ± SEM (n = 3)", "Dose–response fit"],
+        loc="lower left",
+        frameon=False,
+        handlelength=2.5,
+    )
+
+    fig.savefig(PNG_OUTPUT, dpi=600, bbox_inches="tight", facecolor="white")
+    fig.savefig(PDF_OUTPUT, bbox_inches="tight", facecolor="white")
+    print(f"Saved: {PNG_OUTPUT}")
+    print(f"Saved: {PDF_OUTPUT}")
+
+
+if __name__ == "__main__":
+    main()
