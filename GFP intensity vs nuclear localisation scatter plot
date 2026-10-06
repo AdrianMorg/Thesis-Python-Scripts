@@ -1,0 +1,136 @@
+import csv
+from pathlib import Path
+import openpyxl
+import numpy as np
+import matplotlib.pyplot as plt
+from matplotlib.lines import Line2D
+from matplotlib.ticker import PercentFormatter, MaxNLocator
+from scipy.stats import spearmanr, pearsonr, linregress
+
+ROOT = Path(r'C:\Users\adm956\Documents\Codex\2026-08-31\is-th')
+BASE = Path(r'C:\Users\adm956\OneDrive - University of Wollongong\Honours\Aim 2')
+SOURCES = [
+    ('2 days', 'Replicate 1', BASE / 'Manual analysis 2 day/rep1 manual analysis 2 day timeframe.xlsx'),
+    ('2 days', 'Replicate 2', BASE / 'Manual analysis 2 day/rep2 manual analysis 2 day timeframe.xlsx'),
+    ('1 week', 'Replicate 1', BASE / '1 week - Manual analysis of nuclear localisation/Rep1/rep1 manual cell analysis - 1 week.xlsx'),
+    ('1 week', 'Replicate 2', BASE / '1 week - Manual analysis of nuclear localisation/rep2 manual cell analysis - 1 week.xlsx'),
+]
+OUT = ROOT / 'outputs/gfp_intensity_vs_nuclear_localisation_focused'
+OUT.mkdir(parents=True, exist_ok=True)
+CONSTRUCTS = ['dNLS/3R', 'K82Q/3R']
+COLORS = {'Replicate 1': '#6B4C9A', 'Replicate 2': '#D28E2D'}
+records = []
+pairing_issues = []
+for timepoint, replicate, source in SOURCES:
+    wb = openpyxl.load_workbook(source, data_only=False)
+    for sheet in wb:
+        construct = sheet.title.replace(' ', '/') if sheet.title.endswith(' 3R') else sheet.title
+        assert sheet['E2'].value.lower() == 'raw integrated density'
+        numeric_rows = [r for r in range(3, sheet.max_row + 1) if isinstance(sheet.cell(r, 5).value, (int, float))]
+        assert len(numeric_rows) % 2 == 0, (source.name, sheet.title, 'unpaired raw value')
+        for cell, r in enumerate(range(3, sheet.max_row, 2), 1):
+            nucleus, total = sheet.cell(r, 5).value, sheet.cell(r + 1, 5).value
+            if nucleus is None and total is None:
+                continue
+            assert isinstance(nucleus, (int, float)) and isinstance(total, (int, float)), (source.name, sheet.title, r)
+            nucleus_label, total_label = sheet.cell(r, 1).value, sheet.cell(r + 1, 1).value
+            # ImageJ row labels restart between images; retain sequential pair index plus source coordinates.
+            if not (isinstance(nucleus_label, (int, float)) and nucleus_label % 2 == 1 and total_label == nucleus_label + 1):
+                pairing_issues.append((source.name, sheet.title, f'E{r}:E{r+1}', nucleus_label, total_label, nucleus, total))
+            assert total > 0 and 0 <= nucleus <= total
+            # Same INDEX pairing as the source G/H formulas, without relying on cached calculations.
+            records.append(dict(timepoint=timepoint, replicate=replicate, construct=construct,
+                                cell_number=cell, nucleus_raw_integrated_density=nucleus,
+                                total_cell_gfp_raw_integrated_density=total,
+                                nuclear_localisation_percent=100 * nucleus / total,
+                                source_file=source.name, source_sheet=sheet.title,
+                                nucleus_source_cell=f'E{r}', total_source_cell=f'E{r+1}'))
+        print(source.name, sheet.title, 'paired cells:', len(numeric_rows) // 2)
+
+if pairing_issues:
+    print('PAIR LABEL DISCREPANCIES:', pairing_issues)
+    assert len(pairing_issues) == 1 and pairing_issues[0][:3] == ('rep2 manual analysis 2 day timeframe.xlsx', '3R', 'E69:E70')
+    print('User confirmed row-position pairing for E69:E70; original values retained.')
+tdp = [r for r in records if r['construct'] in CONSTRUCTS]
+assert len(tdp) == 400
+with (OUT / 'paired_cell_data.csv').open('w', newline='', encoding='utf-8-sig') as f:
+    writer = csv.DictWriter(f, fieldnames=list(records[0]))
+    writer.writeheader()
+    writer.writerows(tdp)
+
+summary = []
+for construct in CONSTRUCTS:
+    for timepoint in ['2 days', '1 week']:
+        for replicate in COLORS:
+            group = [r for r in tdp if (r['construct'], r['timepoint'], r['replicate']) == (construct, timepoint, replicate)]
+            assert len(group) == 50
+            x = [r['total_cell_gfp_raw_integrated_density'] for r in group]
+            y = [r['nuclear_localisation_percent'] for r in group]
+            summary.append(dict(construct=construct, timepoint=timepoint, replicate=replicate,
+                                n=len(group), pearson_r=float(pearsonr(x, y).statistic),
+                                spearman_rho=float(spearmanr(x, y).statistic)))
+with (OUT / 'within_replicate_correlations.csv').open('w', newline='', encoding='utf-8-sig') as f:
+    writer = csv.DictWriter(f, fieldnames=list(summary[0]))
+    writer.writeheader()
+    writer.writerows(summary)
+
+plt.rcParams.update({'font.family': 'Arial', 'font.size': 15, 'svg.fonttype': 'none'})
+fig, axes = plt.subplots(2, 2, figsize=(10, 8), sharex=True, sharey=True)
+max_x = max(r['total_cell_gfp_raw_integrated_density'] for r in tdp) / 1e6 * 1.05
+regressions = []
+for ci, construct in enumerate(CONSTRUCTS):
+    for ti, timepoint in enumerate(['2 days', '1 week']):
+        ax = axes[ci, ti]
+        condition = [r for r in tdp if (r['construct'], r['timepoint']) == (construct, timepoint)]
+        assert len(condition) == 100
+        x = np.array([r['total_cell_gfp_raw_integrated_density'] / 1e6 for r in condition])
+        y = np.array([r['nuclear_localisation_percent'] for r in condition])
+        fit = linregress(x, y)
+        r_squared = float(fit.rvalue ** 2)
+        regressions.append(dict(construct=construct.replace('dNLS', 'ΔNLS'), timepoint='6 days' if timepoint == '1 week' else timepoint,
+                                n=len(condition), slope_percent_per_million=float(fit.slope),
+                                intercept_percent=float(fit.intercept), r_squared=r_squared,
+                                pearson_r=float(fit.rvalue), p_value=float(fit.pvalue)))
+        for replicate, color in COLORS.items():
+            group = [r for r in tdp if (r['construct'], r['timepoint'], r['replicate']) == (construct, timepoint, replicate)]
+            ax.scatter([r['total_cell_gfp_raw_integrated_density'] / 1e6 for r in group],
+                       [r['nuclear_localisation_percent'] for r in group], s=23,
+                       color=color, alpha=0.78, edgecolors='white', linewidths=0.3)
+        x_line = np.array([x.min(), x.max()])
+        ax.plot(x_line, fit.intercept + fit.slope * x_line, color='#30343B', linewidth=1.7, zorder=4)
+        ax.text(0.97, 0.94, f'R² = {r_squared:.3f}', transform=ax.transAxes,
+                ha='right', va='top', fontsize=15, fontweight='bold', color='#30343B',
+                bbox={'facecolor': 'white', 'edgecolor': 'none', 'alpha': 0.86, 'pad': 1.5})
+        display_construct = construct.replace('dNLS', 'ΔNLS')
+        ax.set_title(display_construct, loc='left', fontsize=20, fontweight='bold', pad=8)
+        ax.set_xlim(0, max_x)
+        ax.set_ylim(0, 102)
+        ax.set_yticks([0, 25, 50, 75, 100])
+        ax.yaxis.set_major_formatter(PercentFormatter(100, decimals=0))
+        ax.xaxis.set_major_locator(MaxNLocator(5))
+        ax.grid(color='#D7D7D7', linewidth=0.6, alpha=0.6)
+        ax.set_axisbelow(True)
+        for side in ['top', 'right']:
+            ax.spines[side].set_visible(False)
+        for side in ['bottom', 'left']:
+            ax.spines[side].set_color('#6B7785')
+fig.subplots_adjust(left=0.13, right=0.98, bottom=0.16, top=0.79, hspace=0.44, wspace=0.20)
+for ti, heading in enumerate(['2 days', '6 days']):
+    pos = axes[0, ti].get_position()
+    fig.text((pos.x0 + pos.x1) / 2, 0.84, heading, ha='center', fontsize=22, fontweight='bold')
+fig.legend(handles=[Line2D([0], [0], marker='o', linestyle='none', color=c, markersize=10, label=r)
+                    for r, c in COLORS.items()] + [Line2D([0], [0], color='#30343B', linewidth=1.7, label='Linear fit')],
+           loc='upper center', bbox_to_anchor=(0.5, 0.99), ncol=3, frameon=False,
+           prop={'family': 'Arial', 'size': 16, 'weight': 'bold'})
+fig.supxlabel('Total-cell GFP intensity (raw integrated density, ×10⁶)', y=0.04, fontsize=19, fontweight='bold')
+fig.supylabel('TDP-43 in the nucleus (%)', x=0.015, fontsize=19, fontweight='bold')
+for suffix in ['png', 'svg']:
+    fig.savefig(OUT / f'GFP_intensity_vs_nuclear_localisation.{suffix}', dpi=600 if suffix == 'png' else None, facecolor='white')
+plt.close(fig)
+with (OUT / 'condition_linear_regression.csv').open('w', newline='', encoding='utf-8-sig') as f:
+    writer = csv.DictWriter(f, fieldnames=list(regressions[0]))
+    writer.writeheader()
+    writer.writerows(regressions)
+print('Regressions:', [(r['construct'].replace('Δ', 'delta'), r['timepoint'], round(r['r_squared'], 3)) for r in regressions])
+print('TDP-43 cells plotted:', len(tdp))
+print('Output:', OUT)
