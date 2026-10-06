@@ -1,0 +1,56 @@
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from matplotlib.lines import Line2D
+
+
+SOURCE = Path(r"C:\Users\adm956\OneDrive - University of Wollongong\Honours\Aim 1\gfp_vs_reporter_transfected_only_no_ut_excel_check_data.xlsx")
+OUT = Path(r"C:\Users\adm956\Documents\Codex\2026-09-15\one-s\outputs")
+OUT.mkdir(parents=True, exist_ok=True)
+
+data = pd.read_excel(SOURCE, sheet_name="Cell points long")
+data = data.dropna(subset=["Metadata_Construct", "gfp_intensity", "reporter_intensity"])
+summary = pd.read_excel(SOURCE, sheet_name="Construct summary")
+labels = dict(zip(summary["Metadata_Construct"], summary["construct_label_plain"]))
+order = summary["Metadata_Construct"].tolist()
+short_labels = {"WT": "WT", "NTD": "ΔNTD", "CTD": "ΔCTD", "2M": "2M", "3M": "3M", "FL": "FL", "GFP": "EGFP"}
+gfp_display_max = data["gfp_intensity"].quantile(0.99)
+reporter_display_max = data["reporter_intensity"].quantile(0.99)
+
+fig, ax = plt.subplots(figsize=(10, 6.5), dpi=180)
+colors = plt.get_cmap("tab10").colors
+results = []
+legend_handles = []
+for i, construct in enumerate(order):
+    group = data.loc[data["Metadata_Construct"] == construct]
+    x = group["gfp_intensity"].to_numpy(dtype=float)
+    y = group["reporter_intensity"].to_numpy(dtype=float)
+    finite = np.isfinite(x) & np.isfinite(y)
+    x, y = x[finite], y[finite]
+    slope, intercept = np.polyfit(x, y, 1)
+    predicted = slope * x + intercept
+    r2 = 1 - np.sum((y - predicted) ** 2) / np.sum((y - y.mean()) ** 2)
+    line_x = np.linspace(x.min(), min(x.max(), gfp_display_max), 200)
+    color = colors[i]
+    visible = (x <= gfp_display_max) & (y <= reporter_display_max)
+    ax.scatter(x[visible], y[visible], s=7, alpha=0.22, color=color, linewidths=0, rasterized=True)
+    ax.plot(line_x, slope * line_x + intercept, color=color, linewidth=2, alpha=0.52)
+    legend_handles.append(Line2D([0], [0], marker="o", linestyle="none", color=color, markersize=10, label=short_labels[construct]))
+    results.append({"construct": labels[construct], "n_cells": len(x), "r_squared": r2, "slope": slope, "intercept": intercept})
+
+ax.set(xlabel="GFP intensity", ylabel="Reporter intensity")
+ax.set_xlim(0, gfp_display_max)
+ax.set_ylim(0, reporter_display_max)
+ax.grid(alpha=0.15)
+two_row_order = [0, 4, 1, 5, 2, 6, 3]
+ax.legend(handles=[legend_handles[i] for i in two_row_order], loc="lower center", bbox_to_anchor=(0.5, 1.02),
+          ncol=4, fontsize=14, frameon=True, columnspacing=1.6,
+          handletextpad=0.5)
+fig.tight_layout()
+fig.savefig(OUT / "gfp_vs_reporter_by_construct.png", dpi=250)
+fig.savefig(OUT / "gfp_vs_reporter_by_construct_high_resolution.png", dpi=600)
+fig.savefig(OUT / "gfp_vs_reporter_by_construct.pdf")
+pd.DataFrame(results).to_csv(OUT / "gfp_vs_reporter_r_squared.csv", index=False, float_format="%.8f")
+print(pd.DataFrame(results).to_string(index=False))
