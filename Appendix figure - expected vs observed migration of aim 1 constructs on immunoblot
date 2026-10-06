@@ -1,0 +1,299 @@
+from pathlib import Path
+
+import matplotlib.pyplot as plt
+from matplotlib.lines import Line2D
+import numpy as np
+import pandas as pd
+
+
+# Save all generated files beside this script.
+OUTDIR = Path(__file__).resolve().parent
+
+# Fixed standard curve parameters. These are not refit from the sample data.
+SLOPE = -0.0011
+INTERCEPT = 2.091
+R2_TEXT = "0.9936"
+
+# Molecular weight standards used to show the standard-curve points.
+STANDARDS = [
+    {"kDa": 75, "px": 216},
+    {"kDa": 50, "px": 340},
+    {"kDa": 37, "px": 455},
+    {"kDa": 25, "px": 626},
+    {"kDa": 20, "px": 727},
+]
+
+# Sample values. exp_kDa and theory_kDa are plotted at the same observed migration.
+SAMPLES = [
+    {"sample": "gfp+tdpwt", "exp_kDa": 66.13022495, "theory_kDa": 71.6, "px": 246},
+    {"sample": "gfp", "exp_kDa": 27.18316367, "theory_kDa": 26.9, "px": 597},
+    {"sample": "deltantd", "exp_kDa": 56.09188048, "theory_kDa": 60.44, "px": 311},
+    {"sample": "deltactd", "exp_kDa": 54.96674249, "theory_kDa": 56.35, "px": 319},
+    {"sample": "2m", "exp_kDa": 65.13283772, "theory_kDa": 71.19, "px": 252},
+    {"sample": "3m", "exp_kDa": 64.96807517, "theory_kDa": 71.08, "px": 253},
+    {"sample": "FL", "exp_kDa": 65.62963667, "theory_kDa": 71.6, "px": 249},
+]
+
+# Construct colours. Standards and the fixed curve are styled separately.
+CONSTRUCT_COLORS = {
+    "gfp+tdpwt": "#009E73",
+    "gfp": "#8B0000",
+    "deltantd": "#D55E00",
+    "deltactd": "#CC79A7",
+    "2m": "#E69F00",
+    "3m": "#332288",
+    "FL": "#56B4E9",
+}
+
+# Legend labels use matplotlib mathtext so construct names appear as superscripts.
+CONSTRUCT_LABELS = {
+    "gfp+tdpwt": r"TDP-43$^{WT}$",
+    "deltantd": r"TDP-43$^{\Delta NTD}$",
+    "deltactd": r"TDP-43$^{\Delta CTD}$",
+    "FL": r"TDP-43$^{FL}$",
+    "2m": r"TDP-43$^{2M}$",
+    "3m": r"TDP-43$^{3M}$",
+    "gfp": "EGFP",
+}
+
+# Jitter is visual only. Original px values are retained for calculations and the
+# fixed curve; only plotted sample x positions are offset to reveal overlapping points.
+PLOT_X_JITTER = {
+    "gfp+tdpwt": -4,
+    "FL": -2,
+    "2m": 0.8,
+    "3m": 2,
+}
+THEORETICAL_X_EXTRA_JITTER = 1
+
+
+def log10(values):
+    """Convert molecular weights to log10 scale for plotting."""
+    return np.log10(np.asarray(values, dtype=float))
+
+
+def fixed_curve(x):
+    """Evaluate the fixed standard curve without fitting."""
+    return SLOPE * np.asarray(x, dtype=float) + INTERCEPT
+
+
+def setup_style():
+    """Set journal-style typography and export settings."""
+    plt.rcParams.update(
+        {
+            "font.family": "Arial",
+            "font.sans-serif": ["Arial"],
+            "mathtext.fontset": "custom",
+            "mathtext.rm": "Arial",
+            "mathtext.it": "Arial:italic",
+            "mathtext.bf": "Arial:bold",
+            "font.size": 7,
+            "axes.labelsize": 8,
+            "axes.linewidth": 0.75,
+            "xtick.labelsize": 7,
+            "ytick.labelsize": 7,
+            "legend.fontsize": 6.8,
+            "pdf.fonttype": 42,
+            "ps.fonttype": 42,
+            "svg.fonttype": "none",
+            "savefig.dpi": 600,
+        }
+    )
+
+
+def draw_sample_points(ax, samples):
+    """Draw experimental circles and theoretical open triangles for each construct."""
+    for _, row in samples.iterrows():
+        color = CONSTRUCT_COLORS[row["sample"]]
+        x_exp = row["px"] + PLOT_X_JITTER.get(row["sample"], 0)
+        x_theory = x_exp + THEORETICAL_X_EXTRA_JITTER
+
+        # Bring 2M forward and make it slightly transparent so nearby points remain visible.
+        z_exp = 12 if row["sample"] == "2m" else 8
+        z_theory = 13 if row["sample"] == "2m" else 9
+        alpha = 0.72 if row["sample"] == "2m" else 1.0
+
+        ax.scatter(
+            x_exp,
+            row["log_exp"],
+            s=42,
+            marker="o",
+            facecolor=color,
+            edgecolor="black",
+            linewidth=0.65,
+            alpha=alpha,
+            zorder=z_exp,
+        )
+        ax.scatter(
+            x_theory,
+            row["log_theory"],
+            s=58,
+            marker="^",
+            facecolor="white",
+            edgecolor=color,
+            linewidth=1.25,
+            alpha=alpha,
+            zorder=z_theory,
+        )
+
+
+def add_legends(ax):
+    """Add separate legends for construct colours and marker meanings."""
+    construct_handles = [
+        Line2D(
+            [0],
+            [0],
+            marker="o",
+            linestyle="None",
+            markerfacecolor=color,
+            markeredgecolor="black",
+            markeredgewidth=0.65,
+            markersize=5.8,
+            label=CONSTRUCT_LABELS.get(sample, sample),
+        )
+        for sample, color in CONSTRUCT_COLORS.items()
+    ]
+
+    marker_handles = [
+        Line2D(
+            [0],
+            [0],
+            marker="o",
+            linestyle="None",
+            markerfacecolor="0.68",
+            markeredgecolor="0.25",
+            markeredgewidth=0.5,
+            markersize=5.8,
+            label="Standards",
+        ),
+        Line2D(
+            [0],
+            [0],
+            marker="o",
+            linestyle="None",
+            markerfacecolor="0.25",
+            markeredgecolor="black",
+            markeredgewidth=0.65,
+            markersize=5.8,
+            label="Experimental",
+        ),
+        Line2D(
+            [0],
+            [0],
+            marker="^",
+            linestyle="None",
+            markerfacecolor="white",
+            markeredgecolor="0.25",
+            markeredgewidth=1.25,
+            markersize=6.2,
+            label="Theoretical",
+        ),
+    ]
+
+    construct_legend = ax.legend(
+        handles=construct_handles,
+        title="Construct",
+        frameon=False,
+        loc="upper left",
+        bbox_to_anchor=(1.02, 1.0),
+        borderaxespad=0,
+        handletextpad=0.75,
+        labelspacing=0.6,
+        title_fontsize=7,
+    )
+    ax.add_artist(construct_legend)
+
+    marker_legend = ax.legend(
+        handles=marker_handles,
+        frameon=False,
+        loc="upper left",
+        bbox_to_anchor=(1.02, 0.27),
+        borderaxespad=0,
+        handletextpad=0.75,
+        labelspacing=0.6,
+        title_fontsize=7,
+    )
+    return construct_legend, marker_legend
+
+
+def draw_main_figure():
+    """Create and export the main full-range standard-curve figure."""
+    standards = pd.DataFrame(STANDARDS)
+    samples = pd.DataFrame(SAMPLES)
+
+    standards["log_kDa"] = log10(standards["kDa"])
+    samples["log_exp"] = log10(samples["exp_kDa"])
+    samples["log_theory"] = log10(samples["theory_kDa"])
+
+    fig, ax = plt.subplots(figsize=(5.8, 2.85))
+    fig.patch.set_facecolor("white")
+    ax.set_facecolor("white")
+
+    # Draw the fixed regression line across the full migration range.
+    xlim = (185, 760)
+    x_line = np.linspace(xlim[0], xlim[1], 500)
+    ax.plot(x_line, fixed_curve(x_line), color="black", lw=1.05, zorder=1)
+
+    # Plot standards as grey circles.
+    ax.scatter(
+        standards["px"],
+        standards["log_kDa"],
+        s=30,
+        marker="o",
+        facecolor="0.68",
+        edgecolor="0.25",
+        linewidth=0.65,
+        zorder=5,
+    )
+
+    draw_sample_points(ax, samples)
+
+    # Add the fixed equation and R-squared text.
+    ax.text(
+        0.055,
+        0.16,
+        "y = -0.0011x + 2.091\nR$^2$ = " + R2_TEXT,
+        transform=ax.transAxes,
+        ha="left",
+        va="top",
+        fontsize=6.7,
+        color="0.12",
+    )
+
+    ax.set_xlabel("Observed migration (pixels)")
+    ax.set_ylabel("Molecular weight (kDa)")
+    ax.set_xlim(*xlim)
+    ax.set_ylim(*log10((18, 82)))
+
+    # Tick labels show kDa values, while their positions are log10(kDa).
+    y_tick_kda = [20, 25, 37, 50, 75]
+    ax.set_yticks(log10(y_tick_kda))
+    ax.set_yticklabels([str(v) for v in y_tick_kda])
+
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    ax.tick_params(direction="out", length=3, width=0.7, pad=2)
+    ax.grid(axis="y", color="0.92", linewidth=0.45)
+
+    legend_artists = add_legends(ax)
+    fig.subplots_adjust(left=0.12, right=0.62, bottom=0.18, top=0.94)
+
+    # Export a 600 dpi PNG, editable SVG, and PDF copy of the main figure.
+    for ext in ("png", "svg", "pdf"):
+        fig.savefig(
+            OUTDIR / f"standard_curve_samples_main_annotated.{ext}",
+            bbox_inches="tight",
+            bbox_extra_artists=legend_artists,
+            pad_inches=0.12,
+            dpi=600,
+        )
+    plt.close(fig)
+
+
+def main():
+    setup_style()
+    draw_main_figure()
+
+
+if __name__ == "__main__":
+    main()
